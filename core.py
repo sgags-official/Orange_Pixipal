@@ -37,7 +37,6 @@ RUN_MAX_SEC = 5          # after this many seconds of running → run2slow
 
 BROWSER_NAMES = {"chrome.exe", "firefox.exe"}  # windows process names
 
-# ────────────────────────────────────────────────────────────
 class StickmanOverlay(QLabel):
     def __init__(self):
         super().__init__()
