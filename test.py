@@ -1,10 +1,9 @@
 """
 stickmate_optimized.py – Smooth & Fast Stickman Desktop Pet
-- Optimized for performance, removed laggy features
-- Proper idle animation sequence (1->2->3->4->5->1)
-- Fixed running animations
-- Chrome active window detection (enjoying_with_us.gif -> watching.gif)
-- Removed click detection for now (will add later)
+- Modified for specific behavior requirements
+- Chrome browser detection with ENJOY → WATCHING loop
+- Cursor following with lag and speed-based running
+- Proper idle animation sequencing
 
 REQUIRED DEPENDENCIES:
 pip install PyQt5 pyautogui psutil pywin32
@@ -65,14 +64,13 @@ RUN2SLOW_R = "running_to_slowing_right.gif"
 CLICK_SINGLE = "single_tap.gif"
 CLICK_DOUBLE = "double_tap.gif"
 ENJOY = "enjoying_with_us.gif"
-SIT = "sitting.gif"
 WATCHING = "watching.gif"
 
 # Speed thresholds (pixels/sec)
 WALK_VEL = 50
-RUN_VEL = 250
-RUN_IDLE = 120
-RUN_MAX_SEC = 5
+FAST_CURSOR_SPEED = 720  # NOTE: Adjust this value to change when running starts
+RUN_IDLE_MAX_TIME = 5  # Max time in running_idle before slowing
+IDLE_ANIMATION_DELAY = 2000  # 2 seconds between idle animations
 
 CHROME_NAMES = {"chrome.exe"}
 RUNNING_ANIMS = {RUN_LEFT, RUN_RIGHT, RUN_IDLE_L, RUN_IDLE_R, RUN2SLOW_L, RUN2SLOW_R}
@@ -105,15 +103,29 @@ class StickmanOverlay(QLabel):
 
         # Initialize all attributes first
         self.movies = {}
-        self.idle_index = 0  # Start at 0 for idle_animation_1
+        self.idle_sequence_index = 0  # Track position in idle sequence
+        self.idle_1_play_count = 0   # Count how many times idle_1 has played
         self.cur_name = None
         self.current_movie = None
-        self.last_pos = None
+        self.last_cursor_pos = None
+        self.stickman_pos = None  # Stickman's current position (with lag)
         self.vel_timer = QElapsedTimer()
-        self.run_start = None
         self.fixed_y = 0
         self.is_chrome_active = False
-        self.enjoying_played = False
+        self.chrome_state = "none"  # "none", "enjoying", "watching"
+
+        # Running state tracking
+        self.running_idle_start_time = None
+        self.current_direction = "right"  # Track last movement direction
+
+        # Idle animation timing
+        self.idle_timer = QTimer()
+        self.idle_timer.setSingleShot(True)
+        self.idle_timer.timeout.connect(self.play_next_idle)
+
+        # Cursor movement detection
+        self.last_cursor_move_time = time.time()
+        self.cursor_stationary = False
 
         try:
             self.setup_ui()
@@ -122,7 +134,7 @@ class StickmanOverlay(QLabel):
             self.setup_timers()
             self.setup_shortcuts()
 
-            # Start with first idle animation (idle_animation_1)
+            # Start with first idle animation
             self.set_animation(IDLE_CLIPS[0])
             self.show()
 
@@ -149,7 +161,7 @@ class StickmanOverlay(QLabel):
         all_clips = list(itertools.chain(IDLE_CLIPS, [
             WALK_LEFT, WALK_RIGHT, RUN_LEFT, RUN_RIGHT,
             RUN_IDLE_L, RUN_IDLE_R, RUN2SLOW_L, RUN2SLOW_R,
-            CLICK_SINGLE, CLICK_DOUBLE, ENJOY, SIT, WATCHING
+            CLICK_SINGLE, CLICK_DOUBLE, ENJOY, WATCHING
         ]))
 
         self.movies = {}
@@ -169,12 +181,15 @@ class StickmanOverlay(QLabel):
             if HAS_PYAUTOGUI:
                 screen_size = pyautogui.size()
                 self.fixed_y = screen_size.height - SIZE_RUN.height() - 50  # 50px from bottom
-                self.last_pos = pyautogui.position()
+                cursor_pos = pyautogui.position()
+                self.last_cursor_pos = cursor_pos
+                self.stickman_pos = cursor_pos  # Start at cursor position
                 self.vel_timer.start()
         except Exception as e:
             print(f"Position setup error: {e}")
             self.fixed_y = 100
-            self.last_pos = type('pos', (), {'x': 100, 'y': 100})()
+            self.last_cursor_pos = type('pos', (), {'x': 100, 'y': 100})()
+            self.stickman_pos = type('pos', (), {'x': 100, 'y': 100})()
 
     def setup_timers(self):
         """Setup all timers safely"""
@@ -197,24 +212,42 @@ class StickmanOverlay(QLabel):
         except Exception as e:
             print(f"Shortcut setup error: {e}")
 
-    def next_idle(self):
-        """Get next idle animation in strict sequence (1->2->3->4->5->1...)"""
-        available_idles = [clip for clip in IDLE_CLIPS if clip in self.movies]
-        if not available_idles:
-            return None
+    def reset_idle_sequence(self):
+        """Reset idle animation sequence to beginning"""
+        self.idle_sequence_index = 0
+        self.idle_1_play_count = 0
+        self.idle_timer.stop()
 
-        # Move to next in sequence
-        self.idle_index = (self.idle_index + 1) % len(IDLE_CLIPS)
-        next_clip = IDLE_CLIPS[self.idle_index]
+    def play_next_idle(self):
+        """Play next animation in idle sequence"""
+        if not self.cursor_stationary:
+            return
 
-        # If next clip is not available, find the next available one
-        attempts = 0
-        while next_clip not in available_idles and attempts < len(IDLE_CLIPS):
-            self.idle_index = (self.idle_index + 1) % len(IDLE_CLIPS)
-            next_clip = IDLE_CLIPS[self.idle_index]
-            attempts += 1
+        # Idle sequence: idle_1 (2 times) -> idle_2 -> idle_3 -> idle_4 -> idle_5 (loop)
+        if self.idle_sequence_index == 0:  # idle_animation_1
+            if self.idle_1_play_count < 2:
+                self.set_animation(IDLE_CLIPS[0])
+                self.idle_1_play_count += 1
+                if self.idle_1_play_count >= 2:
+                    self.idle_sequence_index = 1
+            else:
+                self.idle_sequence_index = 1
 
-        return next_clip if next_clip in available_idles else available_idles[0]
+        elif self.idle_sequence_index < len(IDLE_CLIPS):
+            # Play idle_2, idle_3, idle_4, idle_5
+            if IDLE_CLIPS[self.idle_sequence_index] in self.movies:
+                self.set_animation(IDLE_CLIPS[self.idle_sequence_index])
+            self.idle_sequence_index += 1
+
+        else:
+            # Loop back to idle_5 (index 4)
+            self.idle_sequence_index = 4
+            if IDLE_CLIPS[4] in self.movies:  # idle_animation_5
+                self.set_animation(IDLE_CLIPS[4])
+
+        # Schedule next idle animation if cursor is still stationary
+        if self.cursor_stationary:
+            self.idle_timer.start(IDLE_ANIMATION_DELAY)
 
     def set_animation(self, clip_name):
         """Set animation with proper cleanup"""
@@ -245,8 +278,8 @@ class StickmanOverlay(QLabel):
             self.current_movie = movie
             self.setMovie(movie)
 
-            # Connect finished signal for special animations only
-            if clip_name in [ENJOY, CLICK_SINGLE, CLICK_DOUBLE]:
+            # Connect finished signal for special animations
+            if clip_name in [ENJOY, WATCHING, CLICK_SINGLE, CLICK_DOUBLE, RUN2SLOW_L, RUN2SLOW_R]:
                 movie.finished.connect(lambda: self.on_animation_finished(clip_name))
 
             movie.start()
@@ -257,24 +290,36 @@ class StickmanOverlay(QLabel):
     def on_animation_finished(self, clip_name):
         """Handle animation completion"""
         try:
-            if clip_name in [CLICK_SINGLE, CLICK_DOUBLE]:
-                next_anim = self.next_idle()
-                if next_anim:
-                    self.set_animation(next_anim)
-            elif clip_name == ENJOY:
-                # After enjoying, play watching animation
+            if clip_name == ENJOY:
+                # After enjoying, start watching loop
+                self.chrome_state = "watching"
                 if WATCHING in self.movies:
                     self.set_animation(WATCHING)
+
+            elif clip_name == WATCHING:
+                # Keep looping watching if Chrome is still active
+                if self.is_chrome_active and WATCHING in self.movies:
+                    self.set_animation(WATCHING)
                 else:
-                    # Fall back to sitting if watching not available
-                    if SIT in self.movies:
-                        self.set_animation(SIT)
-                    else:
-                        next_anim = self.next_idle()
-                        if next_anim:
-                            self.set_animation(next_anim)
+                    # Chrome no longer active, return to idle
+                    self.chrome_state = "none"
+                    self.return_to_idle_1()
+
+            elif clip_name in [RUN2SLOW_L, RUN2SLOW_R]:
+                # After slowing animation, return to idle_1
+                self.return_to_idle_1()
+
+            elif clip_name in [CLICK_SINGLE, CLICK_DOUBLE]:
+                self.return_to_idle_1()
+
         except Exception as e:
             print(f"Animation finish error: {e}")
+
+    def return_to_idle_1(self):
+        """Return to idle_animation_1 and reset sequence"""
+        self.reset_idle_sequence()
+        if IDLE_CLIPS[0] in self.movies:
+            self.set_animation(IDLE_CLIPS[0])
 
     def is_chrome_active_window(self):
         """Check if Chrome is the active window"""
@@ -311,100 +356,149 @@ class StickmanOverlay(QLabel):
             # If Chrome just became active
             if chrome_active and not self.is_chrome_active:
                 self.is_chrome_active = True
+                self.chrome_state = "enjoying"
 
                 # Start enjoying animation if not in special states
                 if (self.cur_name not in (ENJOY, WATCHING, CLICK_SINGLE, CLICK_DOUBLE)
                     and ENJOY in self.movies):
+                    self.reset_idle_sequence()  # Stop idle sequence
                     self.set_animation(ENJOY)
 
             # If Chrome is no longer active
             elif not chrome_active and self.is_chrome_active:
                 self.is_chrome_active = False
+                self.chrome_state = "none"
 
                 # Return to idle if currently in browser-specific animations
-                if self.cur_name in (ENJOY, WATCHING, SIT):
-                    next_anim = self.next_idle()
-                    if next_anim:
-                        self.set_animation(next_anim)
+                if self.cur_name in (ENJOY, WATCHING):
+                    self.return_to_idle_1()
 
         except Exception as e:
             print(f"Chrome check error: {e}")
 
     def update_state(self):
-        """Main state update loop - optimized"""
+        """Main state update loop"""
         try:
             if not HAS_PYAUTOGUI:
                 return
 
-            # Get current mouse position safely
+            # Get current cursor position
             try:
-                pos = pyautogui.position()
+                cursor_pos = pyautogui.position()
             except Exception:
                 return
 
-            if not self.last_pos:
-                self.last_pos = pos
+            if not self.last_cursor_pos:
+                self.last_cursor_pos = cursor_pos
                 return
 
-            # Calculate movement
-            dx = pos.x - self.last_pos.x
-            elapsed_ms = max(1, self.vel_timer.restart())
-            speed = abs(dx) / (elapsed_ms / 1000.0)
+            # Check if cursor moved
+            cursor_moved = (cursor_pos.x != self.last_cursor_pos.x or
+                          cursor_pos.y != self.last_cursor_pos.y)
 
-            # Update position - optimized bounds checking
-            screen_width = pyautogui.size().width
-            new_x = max(0, min(pos.x - self.width() // 2, screen_width - self.width()))
-            self.move(new_x, self.fixed_y)
-
-            self.last_pos = pos
-
-            # Skip animation logic for special animations
-            if self.cur_name in (CLICK_SINGLE, CLICK_DOUBLE, ENJOY, WATCHING):
-                return
-
-            # Animation state machine - simplified
-            if speed < WALK_VEL:
-                self.run_start = None
-                if self.cur_name not in IDLE_CLIPS:
-                    next_anim = self.next_idle()
-                    if next_anim:
-                        self.set_animation(next_anim)
-
-            elif speed < RUN_VEL:
-                self.run_start = None
-                walk_anim = WALK_RIGHT if dx > 0 else WALK_LEFT
-                if walk_anim in self.movies:
-                    self.set_animation(walk_anim)
-
+            if cursor_moved:
+                self.last_cursor_move_time = time.time()
+                self.cursor_stationary = False
+                # Reset idle sequence when cursor moves
+                if self.cur_name in IDLE_CLIPS and self.chrome_state == "none":
+                    self.reset_idle_sequence()
             else:
-                # Running state
-                if self.run_start is None:
-                    self.run_start = time.time()
+                # Check if cursor has been stationary for a while
+                if time.time() - self.last_cursor_move_time > 1.0:  # 1 second delay
+                    if not self.cursor_stationary:
+                        self.cursor_stationary = True
+                        # Start idle sequence if not in Chrome mode
+                        if self.chrome_state == "none" and self.cur_name == IDLE_CLIPS[0]:
+                            self.idle_timer.start(IDLE_ANIMATION_DELAY)
 
-                run_anim = RUN_RIGHT if dx > 0 else RUN_LEFT
-                if run_anim in self.movies:
+            # Skip movement logic for Chrome animations
+            if self.chrome_state in ["enjoying", "watching"]:
+                self.last_cursor_pos = cursor_pos
+                return
+
+            # Skip movement logic for special animations
+            if self.cur_name in (CLICK_SINGLE, CLICK_DOUBLE, ENJOY, WATCHING):
+                self.last_cursor_pos = cursor_pos
+                return
+
+            # Calculate cursor speed
+            dx = cursor_pos.x - self.last_cursor_pos.x
+            elapsed_ms = max(1, self.vel_timer.restart())
+            cursor_speed = abs(dx) / (elapsed_ms / 1000.0)
+
+            # Update stickman position with lag (move towards cursor)
+            if self.stickman_pos:
+                # Calculate distance to cursor
+                distance_to_cursor = abs(cursor_pos.x - self.stickman_pos.x)
+
+                # Stickman movement speed (lag effect)
+                if distance_to_cursor > 10:  # Only move if far enough from cursor
+                    move_speed = min(distance_to_cursor * 0.1, 200)  # Lag factor
+                    if cursor_pos.x > self.stickman_pos.x:
+                        self.stickman_pos = type('pos', (), {
+                            'x': self.stickman_pos.x + move_speed * (elapsed_ms / 1000.0),
+                            'y': self.stickman_pos.y
+                        })()
+                        self.current_direction = "right"
+                    else:
+                        self.stickman_pos = type('pos', (), {
+                            'x': self.stickman_pos.x - move_speed * (elapsed_ms / 1000.0),
+                            'y': self.stickman_pos.y
+                        })()
+                        self.current_direction = "left"
+
+            # Update stickman visual position
+            if self.stickman_pos:
+                screen_width = pyautogui.size().width
+                new_x = max(0, min(int(self.stickman_pos.x) - self.width() // 2,
+                                 screen_width - self.width()))
+                self.move(new_x, self.fixed_y)
+
+            # Animation logic based on cursor speed and distance
+            if cursor_speed >= FAST_CURSOR_SPEED and cursor_moved:
+                # Fast cursor movement - start running immediately
+                run_anim = RUN_RIGHT if self.current_direction == "right" else RUN_LEFT
+                if run_anim in self.movies and self.cur_name != run_anim:
                     self.set_animation(run_anim)
+                    # Immediately transition to running idle
+                    QTimer.singleShot(500, self.start_running_idle)  # 0.5 second delay
 
-                # Transition to slowing after max run time
-                if time.time() - self.run_start > RUN_MAX_SEC:
-                    slow_anim = RUN2SLOW_R if dx > 0 else RUN2SLOW_L
-                    if slow_anim in self.movies:
-                        self.set_animation(slow_anim)
+            elif cursor_moved and distance_to_cursor > 50:
+                # Normal cursor movement - walking
+                if distance_to_cursor > 10:
+                    walk_anim = WALK_RIGHT if self.current_direction == "right" else WALK_LEFT
+                    if walk_anim in self.movies and self.cur_name not in RUNNING_ANIMS:
+                        self.set_animation(walk_anim)
 
-                        # Schedule return to idle
-                        slow_duration = self.movies[slow_anim].duration() or 1200
-                        QTimer.singleShot(slow_duration, lambda: self.set_animation(self.next_idle()))
+            elif not cursor_moved or distance_to_cursor <= 10:
+                # Cursor stopped or stickman caught up
+                if self.cur_name in [RUN_LEFT, RUN_RIGHT, WALK_LEFT, WALK_RIGHT]:
+                    self.return_to_idle_1()
+                elif self.cur_name in [RUN_IDLE_L, RUN_IDLE_R]:
+                    # Check if running idle has been playing too long
+                    if (self.running_idle_start_time and
+                        time.time() - self.running_idle_start_time > RUN_IDLE_MAX_TIME):
+                        # Play slowing animation
+                        slow_anim = RUN2SLOW_R if self.current_direction == "right" else RUN2SLOW_L
+                        if slow_anim in self.movies:
+                            self.set_animation(slow_anim)
+                        self.running_idle_start_time = None
 
-                    self.run_start = None
-
-            # Running idle state
-            if self.cur_name in (RUN_RIGHT, RUN_LEFT) and speed < RUN_IDLE:
-                idle_anim = RUN_IDLE_R if dx > 0 else RUN_IDLE_L
-                if idle_anim in self.movies:
-                    self.set_animation(idle_anim)
+            self.last_cursor_pos = cursor_pos
 
         except Exception as e:
             print(f"State update error: {e}")
+
+    def start_running_idle(self):
+        """Start running idle animation"""
+        try:
+            if self.cur_name in [RUN_LEFT, RUN_RIGHT]:
+                idle_anim = RUN_IDLE_R if self.current_direction == "right" else RUN_IDLE_L
+                if idle_anim in self.movies:
+                    self.set_animation(idle_anim)
+                    self.running_idle_start_time = time.time()
+        except Exception as e:
+            print(f"Running idle error: {e}")
 
     def cleanup(self):
         """Clean up resources"""
@@ -414,6 +508,8 @@ class StickmanOverlay(QLabel):
                 self.anim_timer.stop()
             if hasattr(self, 'browser_timer'):
                 self.browser_timer.stop()
+            if hasattr(self, 'idle_timer'):
+                self.idle_timer.stop()
 
             # Stop current movie
             if self.current_movie:
