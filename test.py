@@ -3,7 +3,7 @@ stickmate_optimized.py – Smooth & Fast Stickman Desktop Pet
 - Optimized for performance, removed laggy features
 - Proper idle animation sequence (1->2->3->4->5->1)
 - Fixed running animations
-- Chrome active window detection (enjoying_with_us.gif -> watching.gif loops continuously)
+- Chrome active window detection (enjoying_with_us.gif -> watching.gif)
 - Removed click detection for now (will add later)
 
 REQUIRED DEPENDENCIES:
@@ -240,20 +240,12 @@ class StickmanOverlay(QLabel):
             else:
                 movie.setScaledSize(SIZE_IDLE)
 
-            # Set loop count based on animation type
-            if clip_name == WATCHING:
-                # Set WATCHING to loop infinitely
-                movie.setLoopCount(-1)  # -1 means infinite loop
-            else:
-                # Reset to default (play once) for other animations
-                movie.setLoopCount(1)
-
             # Set new movie
             self.cur_name = clip_name
             self.current_movie = movie
             self.setMovie(movie)
 
-            # Connect finished signal only for specific animations (NOT for WATCHING)
+            # Connect finished signal for special animations only
             if clip_name in [ENJOY, CLICK_SINGLE, CLICK_DOUBLE]:
                 movie.finished.connect(lambda: self.on_animation_finished(clip_name))
 
@@ -270,7 +262,7 @@ class StickmanOverlay(QLabel):
                 if next_anim:
                     self.set_animation(next_anim)
             elif clip_name == ENJOY:
-                # After enjoying, play watching animation (which will loop infinitely)
+                # After enjoying, play watching animation
                 if WATCHING in self.movies:
                     self.set_animation(WATCHING)
                 else:
@@ -366,7 +358,7 @@ class StickmanOverlay(QLabel):
 
             self.last_pos = pos
 
-            # Skip animation logic for special animations (including WATCHING)
+            # Skip animation logic for special animations
             if self.cur_name in (CLICK_SINGLE, CLICK_DOUBLE, ENJOY, WATCHING):
                 return
 
