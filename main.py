@@ -15,12 +15,12 @@ from PyQt5.QtCore import Qt, QTimer, QSize, QElapsedTimer
 from PyQt5.QtGui import QMovie, QKeySequence
 from PyQt5.QtWidgets import QApplication, QLabel, QShortcut
 
+
 # Safe Imports with Fallbacks set for error detection
 try:
     import psutil
     import win32gui
     import win32process
-
     HAS_PSUTIL = True
     HAS_WIN32 = True
 
@@ -30,7 +30,6 @@ except ImportError as e:
         print("Warning: win32gui not available, using basic browser detection")
         try:
             import psutil
-
             HAS_PSUTIL = True
         except ImportError:
             HAS_PSUTIL = False
@@ -42,7 +41,6 @@ except ImportError as e:
 
 try:
     import pyautogui
-
     pyautogui.FAILSAFE = False  # Disable failsafe
     HAS_PYAUTOGUI = True
 except ImportError:
@@ -53,7 +51,6 @@ except ImportError:
 try:
     import pynput
     from pynput import mouse
-
     HAS_PYNPUT = True
 except ImportError:
     HAS_PYNPUT = False
@@ -118,7 +115,6 @@ SIZE_RUN = QSize(150, 200)
 # Click detection parameters
 CLICK_DETECTION_RADIUS = 100  # Distance from cursor to trigger click animation
 
-
 # QMOVIE FUNCTION
 def safe_movie(path):
     """Create a QMovie with proper error handling"""
@@ -138,8 +134,7 @@ def safe_movie(path):
         print(f"⚠ Error loading {path.name}: {e}")
         return None
 
-
-# Creating a Class
+#Creating a Class
 class StickmanOverlay(QLabel):
     def __init__(self):
         super().__init__()
@@ -362,7 +357,7 @@ class StickmanOverlay(QLabel):
             timeout = IDLE_TIMEOUTS[-2]  # Use timeout 4 for idle_5 loops
 
         if timeout > 0:
-            print(f"⏰ Next idle in {timeout / 1000:.1f} seconds")
+            print(f"⏰ Next idle in {timeout/1000:.1f} seconds")
             self.idle_timer.start(timeout)
 
     def start_idle_sequence(self):
@@ -535,7 +530,7 @@ class StickmanOverlay(QLabel):
 
             # Check if cursor moved
             cursor_moved = (cursor_pos.x != self.last_cursor_pos.x or
-                            cursor_pos.y != self.last_cursor_pos.y)
+                          cursor_pos.y != self.last_cursor_pos.y)
 
             if cursor_moved:
                 self.last_cursor_move_time = time.time()
@@ -551,7 +546,7 @@ class StickmanOverlay(QLabel):
                         self.cursor_stationary = True
                         # Start idle sequence
                         if (self.chrome_state == "none" and not self.movement_locked
-                                and self.cur_name == IDLE_CLIPS[0]):
+                            and self.cur_name == IDLE_CLIPS[0]):
                             self.start_idle_sequence()
 
             # Handle Chrome mode positioning
@@ -563,7 +558,7 @@ class StickmanOverlay(QLabel):
 
             # Skip movement logic for special animations or when locked
             if (self.cur_name in (CLICK_SINGLE, CLICK_DOUBLE, ENJOY, WATCHING)
-                    or self.movement_locked):
+                or self.movement_locked):
                 self.last_cursor_pos = cursor_pos
                 return
 
@@ -603,7 +598,7 @@ class StickmanOverlay(QLabel):
             # Update stickman visual position
             screen_width = pyautogui.size().width
             new_x = max(0, min(int(self.stickman_x) - self.width() // 2,
-                               screen_width - self.width()))
+                             screen_width - self.width()))
             self.move(new_x, self.fixed_y)
 
             # Animation logic
@@ -627,7 +622,7 @@ class StickmanOverlay(QLabel):
                     self.return_to_idle()
                 elif self.cur_name in [RUN_IDLE_L, RUN_IDLE_R]:
                     if (self.running_idle_start_time and
-                            time.time() - self.running_idle_start_time > RUN_IDLE_MAX_TIME):
+                        time.time() - self.running_idle_start_time > RUN_IDLE_MAX_TIME):
                         slow_anim = RUN2SLOW_R if self.current_direction == "right" else RUN2SLOW_L
                         if slow_anim in self.movies:
                             self.movement_locked = True
@@ -653,8 +648,8 @@ class StickmanOverlay(QLabel):
         """Clean up resources"""
         try:
             # Stop mouse listener
-            if hasattr(self, 'mouse_handler'):
-                self.mouse_handler.stop_listener()
+            if self.mouse_listener:
+                self.mouse_listener.stop()
 
             # Stop all timers
             if hasattr(self, 'anim_timer'):
@@ -694,7 +689,6 @@ class StickmanOverlay(QLabel):
         self.cleanup()
         event.accept()
 
-
 def main():
     """Main application entry point"""
     try:
@@ -714,7 +708,6 @@ def main():
         print(f"Application error: {e}")
         traceback.print_exc()
         sys.exit(1)
-
 
 if __name__ == "__main__":
     main()
