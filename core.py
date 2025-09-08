@@ -23,7 +23,6 @@ try:
     import win32process
     HAS_PSUTIL = True
     HAS_WIN32 = True
-
 except ImportError as e:
     if 'win32' in str(e):
         HAS_WIN32 = False
@@ -48,13 +47,14 @@ except ImportError:
     print("Error: pyautogui is required")
     sys.exit(1)
 
+# Import win32api for click detection
 try:
-    import pynput
-    from pynput import mouse
-    HAS_PYNPUT = True
+    import win32api
+    import win32con
+    HAS_WIN32API = True
 except ImportError:
-    HAS_PYNPUT = False
-    print("Warning: pynput not available, click detection disabled")
+    HAS_WIN32API = False
+    print("Warning: win32api not available, click detection disabled")
 
 ASSET_DIR = pathlib.Path(__file__).parent
 
@@ -96,6 +96,10 @@ IDLE_ANIMATION_TIMEOUT_5 = 0  # Placeholder - idle_5 loops indefinitely
 # Enjoying animation duration
 ENJOY_DURATION = int(0.766666 * 1000)  # 0.766666 seconds in milliseconds
 
+# Click animation durations (in milliseconds)
+CLICK_SINGLE_DURATION = int(0.7666666 * 1000)  # 766.6666 ms
+CLICK_DOUBLE_DURATION = int(1.1333333 * 1000)  # 1133.3333 ms
+
 # Create timeout list for easy access
 IDLE_TIMEOUTS = [
     IDLE_ANIMATION_TIMEOUT_1,
@@ -111,9 +115,6 @@ RUNNING_ANIMS = {RUN_LEFT, RUN_RIGHT, RUN_IDLE_L, RUN_IDLE_R, RUN2SLOW_L, RUN2SL
 # Target display sizes
 SIZE_IDLE = QSize(100, 200)
 SIZE_RUN = QSize(150, 200)
-
-# Click detection parameters
-CLICK_DETECTION_RADIUS = 100  # Distance from cursor to trigger click animation
 
 # QMOVIE FUNCTION
 def safe_movie(path):
@@ -168,14 +169,23 @@ class StickmanOverlay(QLabel):
         self.enjoy_timer.setSingleShot(True)
         self.enjoy_timer.timeout.connect(self.start_watching)
 
+        # Click animation timer
+        self.click_timer_single = QTimer()
+        self.click_timer_single.setSingleShot(True)
+        self.click_timer_single.timeout.connect(lambda: self.force_stop_click_animation(CLICK_SINGLE))
+
+        self.click_timer_double = QTimer()
+        self.click_timer_double.setSingleShot(True)
+        self.click_timer_double.timeout.connect(lambda: self.force_stop_click_animation(CLICK_DOUBLE))
+
         # Cursor movement detection
         self.last_cursor_move_time = time.time()
         self.cursor_stationary = False
 
-        # Click detection
+        # Click detection with win32api
         self.last_click_time = 0
-        self.click_count = 0
-        self.mouse_listener = None
+        self.double_click_threshold = 0.4  # seconds
+        self.last_mouse_state = False
 
         try:
             self.setup_ui()
@@ -183,7 +193,6 @@ class StickmanOverlay(QLabel):
             self.setup_position()
             self.setup_timers()
             self.setup_shortcuts()
-            self.setup_mouse_listener()
 
             # Start with first idle animation
             self.set_animation(IDLE_CLIPS[0])
@@ -206,61 +215,6 @@ class StickmanOverlay(QLabel):
         )
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setScaledContents(False)
-
-    def setup_mouse_listener(self):
-        """Setup mouse click listener"""
-        if HAS_PYNPUT:
-            try:
-                self.mouse_listener = mouse.Listener(on_click=self.on_mouse_click)
-                self.mouse_listener.start()
-            except Exception as e:
-                print(f"Mouse listener setup error: {e}")
-
-    def on_mouse_click(self, x, y, button, pressed):
-        """Handle mouse click events"""
-        try:
-            if not pressed or button != mouse.Button.left:
-                return
-
-            # Only trigger if stickman is near the click
-            distance = abs(self.stickman_x - x)
-            if distance > CLICK_DETECTION_RADIUS:
-                return
-
-            current_time = time.time()
-
-            # Reset click count if too much time has passed
-            if current_time - self.last_click_time > 0.5:  # 500ms double-click window
-                self.click_count = 0
-
-            self.click_count += 1
-            self.last_click_time = current_time
-
-            # Use a timer to detect single vs double click
-            QTimer.singleShot(300, self.process_click)  # 300ms delay
-
-        except Exception as e:
-            print(f"Click detection error: {e}")
-
-    def process_click(self):
-        """Process the click after delay to determine single vs double"""
-        try:
-            if self.click_count == 1:
-                # Single click
-                if CLICK_SINGLE in self.movies:
-                    self.set_animation(CLICK_SINGLE)
-                    print("🖱️ Single click detected")
-            elif self.click_count >= 2:
-                # Double click
-                if CLICK_DOUBLE in self.movies:
-                    self.set_animation(CLICK_DOUBLE)
-                    print("🖱️ Double click detected")
-
-            # Reset click count
-            self.click_count = 0
-
-        except Exception as e:
-            print(f"Click processing error: {e}")
 
     def load_animations(self):
         """Load all animation files safely"""
@@ -304,6 +258,12 @@ class StickmanOverlay(QLabel):
         self.anim_timer.timeout.connect(self.update_state)
         self.anim_timer.start(33)  # 30 FPS
 
+        # Click detection timer
+        if HAS_WIN32API:
+            self.click_timer = QTimer(self)
+            self.click_timer.timeout.connect(self.detect_click)
+            self.click_timer.start(50)  # Check every 50ms
+
         # Chrome check timer - 5 seconds as requested
         if HAS_PSUTIL and HAS_WIN32:
             self.browser_timer = QTimer(self)
@@ -317,6 +277,47 @@ class StickmanOverlay(QLabel):
             self.exit_shortcut.activated.connect(self.safe_exit)
         except Exception as e:
             print(f"Shortcut setup error: {e}")
+
+    def detect_click(self):
+        """Detect mouse clicks using win32api - simple and reliable"""
+        try:
+            if not HAS_WIN32API:
+                return
+
+            # Check if left mouse button is pressed
+            current_mouse_state = win32api.GetKeyState(win32con.VK_LBUTTON) < 0
+
+            # Detect button press (transition from not pressed to pressed)
+            if current_mouse_state and not self.last_mouse_state:
+                # Only trigger click animations during normal states
+                if (not self.movement_locked and
+                    self.chrome_state == "none" and
+                    self.cur_name not in [ENJOY, WATCHING, RUN2SLOW_L, RUN2SLOW_R]):
+
+                    current_time = time.time()
+
+                    # Check if this is a double click
+                    if current_time - self.last_click_time < self.double_click_threshold:
+                        if CLICK_DOUBLE in self.movies:
+                            self.reset_idle_sequence()  # Stop idle sequence
+                            self.set_animation(CLICK_DOUBLE)
+                            # Start timer to force stop after exact duration
+                            self.click_timer_double.start(CLICK_DOUBLE_DURATION)
+                            print("🖱️ Double click detected")
+                    else:
+                        if CLICK_SINGLE in self.movies:
+                            self.reset_idle_sequence()  # Stop idle sequence
+                            self.set_animation(CLICK_SINGLE)
+                            # Start timer to force stop after exact duration
+                            self.click_timer_single.start(CLICK_SINGLE_DURATION)
+                            print("🖱️ Single click detected")
+
+                    self.last_click_time = current_time
+
+            self.last_mouse_state = current_mouse_state
+
+        except Exception as e:
+            print(f"Click detection error: {e}")
 
     def reset_idle_sequence(self):
         """Reset idle animation sequence to beginning"""
@@ -396,8 +397,8 @@ class StickmanOverlay(QLabel):
             self.current_movie = movie
             self.setMovie(movie)
 
-            # Connect finished signal for special animations
-            if clip_name in [ENJOY, WATCHING, CLICK_SINGLE, CLICK_DOUBLE, RUN2SLOW_L, RUN2SLOW_R]:
+            # Connect finished signal for special animations (excluding click animations since we handle them with timers)
+            if clip_name in [ENJOY, WATCHING, RUN2SLOW_L, RUN2SLOW_R]:
                 movie.finished.connect(lambda: self.on_animation_finished(clip_name))
 
             movie.start()
@@ -423,18 +424,25 @@ class StickmanOverlay(QLabel):
                     # Chrome no longer active, return to idle
                     self.chrome_state = "none"
                     self.chrome_fixed_position = None
-                    self.return_to_idle()
+                    self.return_to_idle_1()
 
             elif clip_name in [RUN2SLOW_L, RUN2SLOW_R]:
                 self.movement_locked = False
                 self.running_idle_start_time = None
-                self.return_to_idle()
-
-            elif clip_name in [CLICK_SINGLE, CLICK_DOUBLE]:
-                self.return_to_idle()
+                self.return_to_idle_1()
 
         except Exception as e:
             print(f"Animation finish error: {e}")
+
+    def force_stop_click_animation(self, expected_clip):
+        """Force stop click animation after exact duration and return to idle_animation_1"""
+        try:
+            # Only stop if we're still playing the expected click animation
+            if self.cur_name == expected_clip:
+                print(f"Force stopping {expected_clip} after precise duration")
+                self.return_to_idle_1()
+        except Exception as e:
+            print(f"Force stop error: {e}")
 
     def return_to_idle(self):
         """Return to idle sequence from beginning"""
@@ -443,6 +451,13 @@ class StickmanOverlay(QLabel):
             self.set_animation(IDLE_CLIPS[0])
             # Start idle sequence after a short delay
             QTimer.singleShot(1000, self.start_idle_sequence)
+
+    def return_to_idle_1(self):
+        """Return directly to idle_animation_1 (used for click animations)"""
+        self.reset_idle_sequence()
+        if IDLE_CLIPS[0] in self.movies:
+            self.set_animation(IDLE_CLIPS[0])
+            print("🔄 Returned to idle_animation_1")
 
     def start_watching(self):
         """Start watching animation after enjoy timer"""
@@ -507,7 +522,7 @@ class StickmanOverlay(QLabel):
 
                 # Return to idle if currently in browser-specific animations
                 if self.cur_name in (ENJOY, WATCHING):
-                    self.return_to_idle()
+                    self.return_to_idle_1()
 
         except Exception as e:
             print(f"Chrome check error: {e}")
@@ -656,8 +671,12 @@ class StickmanOverlay(QLabel):
                 self.idle_timer.stop()
             if hasattr(self, 'enjoy_timer'):
                 self.enjoy_timer.stop()
-            if hasattr(self, 'click_detection_timer'):
-                self.click_detection_timer.stop()
+            if hasattr(self, 'click_timer'):
+                self.click_timer.stop()
+            if hasattr(self, 'click_timer_single'):
+                self.click_timer_single.stop()
+            if hasattr(self, 'click_timer_double'):
+                self.click_timer_double.stop()
 
             # Stop current movie
             if self.current_movie:
