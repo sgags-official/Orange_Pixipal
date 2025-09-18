@@ -4,6 +4,11 @@ The original design of the Orange Pixipal is heavily inspired from the TSC from 
 The inspiration from those animations led me to coding these following lines
 """
 
+"""
+Optimized Orange Pixipal - Performance Enhanced Version
+Major optimizations applied for reduced lag and better responsiveness
+"""
+
 import sys
 import time
 import itertools
@@ -119,7 +124,7 @@ class SystemMonitorThread(QThread):
     def __init__(self):
         super().__init__()
         self.running = True
-        self.check_interval = 2.0  # Reduced from 5 seconds for better responsiveness
+        self.check_interval = 5.0  # Keep at 5 seconds as requested
 
     def run(self):
         last_chrome_state = False
@@ -332,10 +337,10 @@ class OptimizedStickmanOverlay(QLabel):
 
     def setup_timers(self):
         """Optimized timer setup"""
-        # Main animation timer - higher frequency for smoother animation
+        # Main animation timer - back to 30 FPS for optimal balance
         self.anim_timer = QTimer(self)
         self.anim_timer.timeout.connect(self.update_state)
-        self.anim_timer.start(16)  # ~60 FPS instead of 30 FPS
+        self.anim_timer.start(33)  # 30 FPS - sweet spot for performance vs smoothness
 
         # Idle animation timer
         self.idle_timer = QTimer()
@@ -576,14 +581,13 @@ class OptimizedStickmanOverlay(QLabel):
                 else:
                     self.stickman_x -= move_amount
 
-            # Update visual position with smoother movement
+            # Update visual position - removed overly aggressive optimization
             screen_width = pyautogui.size().width
             target_screen_x = max(0, min(int(self.stickman_x) - self.width() // 2,
                                          screen_width - self.width()))
 
-            # Only move if position actually changed
-            if abs(target_screen_x - self.x()) > 1:
-                self.move(target_screen_x, self.fixed_y)
+            # Always update position for smooth movement
+            self.move(target_screen_x, self.fixed_y)
 
             # Optimized animation logic
             if avg_cursor_speed >= FAST_CURSOR_SPEED and cursor_moved and distance_to_cursor > 100:
